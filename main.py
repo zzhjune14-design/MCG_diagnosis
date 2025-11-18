@@ -7,7 +7,7 @@ from models.CNN1D import CNN1D_from_amcg
 from sklearn.metrics import accuracy_score, f1_score
 from tqdm import tqdm
 
-# ---- 新增：checkpoint helpers ----
+# ---- 断点继续训练 ----
 def save_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
                     epoch: int, best_val_f1: float, scaler: torch.cuda.amp.GradScaler = None,
                     label_map: dict = None, extra: dict = None):
