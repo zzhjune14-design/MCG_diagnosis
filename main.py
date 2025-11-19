@@ -4,8 +4,11 @@ import torch.nn as nn
 from pathlib import Path
 from data_process.data_utils import set_seed, build_dataloaders, gather_pickle_files
 from models.CNN1D import CNN1D_from_amcg
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, auc
+import matplotlib.pyplot as plt
 from tqdm import tqdm
+import csv
+
 
 
 # ---- 断点继续训练 ----
@@ -77,7 +80,92 @@ def load_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Op
     return start_epoch, best_val_f1, label_map
 
 
-# ---- 保持你的 train/eval 函数原样或使用已有实现 ----
+# ---- 保存训练过程的指标和绘制曲线 ----
+def plot_metrics(train_losses, val_losses, train_accs, val_accs, train_f1s, val_f1s, train_aucs, val_aucs, output_dir,
+                 model_name):
+    epochs = range(1, len(train_losses) + 1)
+
+    # Loss curve
+    plt.figure()
+    plt.plot(epochs, train_losses, label="Train Loss")
+    plt.plot(epochs, val_losses, label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title(f"{model_name} - Training and Validation Loss")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f"{model_name}_loss_curve.png"))
+    plt.close()
+
+    # Accuracy curve
+    plt.figure()
+    plt.plot(epochs, train_accs, label="Train Accuracy")
+    plt.plot(epochs, val_accs, label="Validation Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.title(f"{model_name} - Training and Validation Accuracy")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f"{model_name}_accuracy_curve.png"))
+    plt.close()
+
+    # F1 Score curve
+    plt.figure()
+    plt.plot(epochs, train_f1s, label="Train F1")
+    plt.plot(epochs, val_f1s, label="Validation F1")
+    plt.xlabel("Epochs")
+    plt.ylabel("F1 Score")
+    plt.title(f"{model_name} - Training and Validation F1 Score")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f"{model_name}_f1_curve.png"))
+    plt.close()
+
+    # AUC curve
+    plt.figure()
+    plt.plot(epochs, train_aucs, label="Train AUC")
+    plt.plot(epochs, val_aucs, label="Validation AUC")
+    plt.xlabel("Epochs")
+    plt.ylabel("AUC")
+    plt.title(f"{model_name} - Training and Validation AUC")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f"{model_name}_auc_curve.png"))
+    plt.close()
+
+
+def plot_roc_curve(fpr, tpr, roc_auc, output_dir, model_name, epoch):
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f"ROC curve (area = {roc_auc:.2f})")
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'{model_name} - ROC Curve - Epoch {epoch}')
+    plt.legend(loc='lower right')
+    plt.savefig(os.path.join(output_dir, f"{model_name}_roc_curve_epoch_{epoch}.png"))
+    plt.close()
+
+
+def save_metrics_to_csv(metrics, output_dir, model_name):
+    filepath = os.path.join(output_dir, f"{model_name}_metrics.csv")
+    fieldnames = ['epoch', 'train_loss', 'val_loss', 'train_acc', 'val_acc', 'train_f1', 'val_f1', 'train_auc',
+                  'val_auc']
+
+    # Write header only if the file is new
+    file_exists = os.path.exists(filepath)
+
+    with open(filepath, mode='a', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()  # Write header only once
+
+        # Ensure metrics is a dictionary
+        if isinstance(metrics, dict):
+            writer.writerow(metrics)
+        else:
+            print("Error: Expected metrics to be a dictionary, but received:", type(metrics))
+
+
+# ---- 训练和评估函数 ----
 def train_epoch(model, loader, optimizer, loss_fn, device, label_map):
     model.train()
     running_loss = 0.0
@@ -112,7 +200,7 @@ def train_epoch(model, loader, optimizer, loss_fn, device, label_map):
     specificity = tn / (tn + fp) if (tn + fp) != 0 else 0.0
     auc = roc_auc_score(trues, all_logits)  # AUC using the predicted probabilities
 
-    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc
+    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc, all_logits, trues
 
 
 @torch.no_grad()
@@ -147,17 +235,19 @@ def eval_epoch(model, loader, loss_fn, device, label_map):
     specificity = tn / (tn + fp) if (tn + fp) != 0 else 0.0
     auc = roc_auc_score(trues, all_logits)  # AUC using the predicted probabilities
 
-    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc
+    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc, all_logits, trues
 
 
-# ---- 修改后的 main，增加 resume_from 参数，并使用上面的 save/load ----
-def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
+# ---- 修改后的 main ----
+def main(pickle_folder: str, label_csv: str, out_dir: str = "./output",
          adapter_mode: str = "bn", batch_size: int = 8, epochs: int = 20,
          lr: float = 1e-3, num_workers: int = 4,
-         seed: int = 42, resume_from: str = None, use_amp: bool = False):
+         seed: int = 42, resume_from: str = None, use_amp: bool = False, model_name="CNN1D"):
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(out_dir, exist_ok=True)
+
+    model_output_dir = os.path.join(out_dir, model_name)
+    os.makedirs(model_output_dir, exist_ok=True)
 
     # --- call build_dataloaders and handle both possible return signatures ---
     dl_res = build_dataloaders(
@@ -168,9 +258,6 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
         num_workers=num_workers,
     )
 
-    # dl_res may be either:
-    #  - (train_loader, val_loader, label_map)  <-- old behavior
-    #  - (dataloaders_per_fold, label_map)       <-- new CV behavior (dataloaders_per_fold is list of (train_loader,val_loader))
     if isinstance(dl_res, tuple) and len(dl_res) == 3:
         train_loader, val_loader, label_map = dl_res
         using_cv = False
@@ -178,25 +265,16 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
         dataloaders_per_fold, label_map = dl_res
         if not isinstance(dataloaders_per_fold, (list, tuple)) or len(dataloaders_per_fold) == 0:
             raise RuntimeError("build_dataloaders returned unexpected folds structure")
-        # default: pick fold 0 to be backward-compatible
         train_loader, val_loader = dataloaders_per_fold[0]
         using_cv = True
-        print(f"[info] build_dataloaders returned {len(dataloaders_per_fold)} folds — using fold 0 by default.")
-        print("If you want to train all folds, modify main.py to loop over dataloaders_per_fold.")
-    else:
-        raise RuntimeError(
-            "Unexpected return from build_dataloaders() - expected (train_loader,val_loader,label_map) or (dataloaders_per_fold,label_map)")
 
     files_all = gather_pickle_files(pickle_folder)
     print(f"Found {len(files_all)} pickle files, labels: {len(label_map)}")
 
     model = CNN1D_from_amcg(num_classes=1, adapter_mode=adapter_mode).to(device)
-    print("Model params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
-
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     loss_fn = nn.BCEWithLogitsLoss()
 
-    # optional AMP scaler
     scaler = torch.cuda.amp.GradScaler() if (use_amp and device.type == "cuda") else None
 
     # resume logic
@@ -206,45 +284,85 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
         print(f"Loading checkpoint from {resume_from} ...")
         start_epoch, best_val_f1, ckpt_label_map = load_checkpoint(resume_from, model, optimizer, scaler)
         if ckpt_label_map is not None:
-            # if label_map was saved in ckpt, prefer it (only if consistent with your current dataloaders)
             label_map = ckpt_label_map
         print(f" Resuming from epoch {start_epoch}, best_val_f1={best_val_f1}")
 
     # training loop
+    train_losses = []
+    val_losses = []
+    train_accs = []
+    val_accs = []
+    train_f1s = []
+    val_f1s = []
+    train_aucs = []
+    val_aucs = []
+
     for epoch in range(start_epoch, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}")
-        train_loss, train_acc, train_f1, train_sens, train_spec, train_auc = train_epoch(model, train_loader, optimizer,
-                                                                                         loss_fn, device, label_map)
-        val_loss, val_acc, val_f1, val_sens, val_spec, val_auc = eval_epoch(model, val_loader, loss_fn, device,
-                                                                            label_map)
+        train_loss, train_acc, train_f1, train_sens, train_spec, train_auc, _, _ = train_epoch(model, train_loader,
+                                                                                               optimizer, loss_fn,
+                                                                                               device, label_map)
+        val_loss, val_acc, val_f1, val_sens, val_spec, val_auc, val_logits, val_trues = eval_epoch(model, val_loader,
+                                                                                                   loss_fn, device,
+                                                                                                   label_map)
 
-        print(
-            f" train loss={train_loss:.4f} acc={train_acc:.4f} f1={train_f1:.4f} sens={train_sens:.4f} spec={train_spec:.4f} auc={train_auc:.4f}")
-        print(
-            f"  val  loss={val_loss:.4f} acc={val_acc:.4f} f1={val_f1:.4f} sens={val_sens:.4f} spec={val_spec:.4f} auc={val_auc:.4f}")
+        print(f" train loss={train_loss:.4f} acc={train_acc:.4f} f1={train_f1:.4f} auc={train_auc:.4f}")
+        print(f"  val  loss={val_loss:.4f} acc={val_acc:.4f} f1={val_f1:.4f} auc={val_auc:.4f}")
 
-        # save last checkpoint every epoch
-        last_path = os.path.join(out_dir, "last_checkpoint.pth")
+        # Save metrics for later plotting
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        train_accs.append(train_acc)
+        val_accs.append(val_acc)
+        train_f1s.append(train_f1)
+        val_f1s.append(val_f1)
+        train_aucs.append(train_auc)
+        val_aucs.append(val_auc)
+
+        # Save metrics to CSV
+        metrics = {
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_acc': train_acc,
+            'val_acc': val_acc,
+            'train_f1': train_f1,
+            'val_f1': val_f1,
+            'train_auc': train_auc,
+            'val_auc': val_auc
+        }
+        save_metrics_to_csv(metrics, model_output_dir, model_name)
+
+        # Save last checkpoint
+        last_path = os.path.join(model_output_dir, "last_checkpoint.pth")
         save_checkpoint(last_path, model, optimizer, epoch, best_val_f1, scaler=scaler, label_map=label_map)
 
-        # if improved, save best checkpoint (both to "best_model.pth" and a timestamped copy if you like)
+        # Save best checkpoint
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
-            best_path = os.path.join(out_dir, "best_checkpoint.pth")
+            best_path = os.path.join(model_output_dir, "best_checkpoint.pth")
             save_checkpoint(best_path, model, optimizer, epoch, best_val_f1, scaler=scaler, label_map=label_map)
             print("  saved best_checkpoint.pth")
 
-    # final save (optional)
-    final_path = os.path.join(out_dir, "final_checkpoint.pth")
-    save_checkpoint(final_path, model, optimizer, epoch, best_val_f1, scaler=scaler, label_map=label_map)
-    print("Training finished. Best val F1:", best_val_f1)
+        # Plot ROC curve
+        fpr, tpr, _ = roc_curve(val_trues, val_logits)
+        roc_auc = auc(fpr, tpr)
+        plot_roc_curve(fpr, tpr, roc_auc, model_output_dir, model_name, epoch)
 
+    # Final save
+    final_path = os.path.join(model_output_dir, "final_checkpoint.pth")
+    save_checkpoint(final_path, model, optimizer, epoch, best_val_f1, scaler=scaler, label_map=label_map)
+
+    # Plot and save metrics curves
+    plot_metrics(train_losses, val_losses, train_accs, val_accs, train_f1s, val_f1s, train_aucs, val_aucs,
+                 model_output_dir, model_name)
+
+    print("Training finished. Best val F1:", best_val_f1)
 
 
 if __name__ == "__main__":
     PICKLE_FOLDER = r"E:\Pythonpro\MCG_quexue_xinshuai\data_pickle"
     LABEL_CSV = r"E:\Pythonpro\MCG_quexue_xinshuai\label.csv"
-    # 在脚本/命令行里
-    main(PICKLE_FOLDER, LABEL_CSV, out_dir="./ckpt", adapter_mode="bn",
+    main(PICKLE_FOLDER, LABEL_CSV, out_dir="./output", adapter_mode="bn",
          batch_size=8, epochs=30, lr=1e-3, num_workers=4, seed=42,
-         resume_from="./ckpt/last_checkpoint.pth", use_amp=False)
+         resume_from="./output/CNN1D/last_checkpoint.pth", use_amp=False, model_name="CNN1D")
