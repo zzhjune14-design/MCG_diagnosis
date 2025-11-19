@@ -4,8 +4,9 @@ import torch.nn as nn
 from pathlib import Path
 from data_process.data_utils import set_seed, build_dataloaders, gather_pickle_files
 from models.CNN1D import CNN1D_from_amcg
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from tqdm import tqdm
+
 
 # ---- 断点继续训练 ----
 def save_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
@@ -75,12 +76,14 @@ def load_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Op
     label_map = ckpt.get('label_map', None)
     return start_epoch, best_val_f1, label_map
 
+
 # ---- 保持你的 train/eval 函数原样或使用已有实现 ----
 def train_epoch(model, loader, optimizer, loss_fn, device, label_map):
     model.train()
     running_loss = 0.0
     preds = []
     trues = []
+    all_logits = []  # Store logits for AUC calculation
     for Xb, subjects, raws in tqdm(loader, desc="train", leave=False):
         Xb = Xb.to(device)
         y = torch.tensor([label_map[s] for s in subjects], dtype=torch.float32, device=device)
@@ -90,11 +93,26 @@ def train_epoch(model, loader, optimizer, loss_fn, device, label_map):
         loss.backward()
         optimizer.step()
         running_loss += loss.item() * Xb.size(0)
+
         preds.extend((torch.sigmoid(logits).detach().cpu().numpy() > 0.5).astype(int).tolist())
         trues.extend(y.detach().cpu().numpy().astype(int).tolist())
+        all_logits.extend(torch.sigmoid(logits).detach().cpu().numpy())  # Store probabilities
+
+    # 计算二分类指标
     acc = accuracy_score(trues, preds)
     f1 = f1_score(trues, preds)
-    return running_loss / len(loader.dataset), acc, f1
+
+    # 计算灵敏度、特异性和AUC
+    tp = sum((p == 1) and (t == 1) for p, t in zip(preds, trues))
+    tn = sum((p == 0) and (t == 0) for p, t in zip(preds, trues))
+    fp = sum((p == 1) and (t == 0) for p, t in zip(preds, trues))
+    fn = sum((p == 0) and (t == 1) for p, t in zip(preds, trues))
+
+    sensitivity = tp / (tp + fn) if (tp + fn) != 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0.0
+    auc = roc_auc_score(trues, all_logits)  # AUC using the predicted probabilities
+
+    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc
 
 
 @torch.no_grad()
@@ -103,24 +121,40 @@ def eval_epoch(model, loader, loss_fn, device, label_map):
     running_loss = 0.0
     preds = []
     trues = []
+    all_logits = []  # Store logits for AUC calculation
     for Xb, subjects, raws in tqdm(loader, desc="eval", leave=False):
         Xb = Xb.to(device)
         y = torch.tensor([label_map[s] for s in subjects], dtype=torch.float32, device=device)
         logits = model(Xb)
         loss = loss_fn(logits, y)
         running_loss += loss.item() * Xb.size(0)
+
         preds.extend((torch.sigmoid(logits).cpu().numpy() > 0.5).astype(int).tolist())
         trues.extend(y.cpu().numpy().astype(int).tolist())
+        all_logits.extend(torch.sigmoid(logits).cpu().numpy())  # Store probabilities
+
+    # 计算二分类指标
     acc = accuracy_score(trues, preds)
     f1 = f1_score(trues, preds)
-    return running_loss / len(loader.dataset), acc, f1
+
+    # 计算灵敏度、特异性和AUC
+    tp = sum((p == 1) and (t == 1) for p, t in zip(preds, trues))
+    tn = sum((p == 0) and (t == 0) for p, t in zip(preds, trues))
+    fp = sum((p == 1) and (t == 0) for p, t in zip(preds, trues))
+    fn = sum((p == 0) and (t == 1) for p, t in zip(preds, trues))
+
+    sensitivity = tp / (tp + fn) if (tp + fn) != 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0.0
+    auc = roc_auc_score(trues, all_logits)  # AUC using the predicted probabilities
+
+    return running_loss / len(loader.dataset), acc, f1, sensitivity, specificity, auc
+
 
 # ---- 修改后的 main，增加 resume_from 参数，并使用上面的 save/load ----
 def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
          adapter_mode: str = "bn", batch_size: int = 8, epochs: int = 20,
          lr: float = 1e-3, num_workers: int = 4,
          seed: int = 42, resume_from: str = None, use_amp: bool = False):
-
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(out_dir, exist_ok=True)
@@ -150,7 +184,8 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
         print(f"[info] build_dataloaders returned {len(dataloaders_per_fold)} folds — using fold 0 by default.")
         print("If you want to train all folds, modify main.py to loop over dataloaders_per_fold.")
     else:
-        raise RuntimeError("Unexpected return from build_dataloaders() - expected (train_loader,val_loader,label_map) or (dataloaders_per_fold,label_map)")
+        raise RuntimeError(
+            "Unexpected return from build_dataloaders() - expected (train_loader,val_loader,label_map) or (dataloaders_per_fold,label_map)")
 
     files_all = gather_pickle_files(pickle_folder)
     print(f"Found {len(files_all)} pickle files, labels: {len(label_map)}")
@@ -178,10 +213,15 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./ckpt",
     # training loop
     for epoch in range(start_epoch, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}")
-        train_loss, train_acc, train_f1 = train_epoch(model, train_loader, optimizer, loss_fn, device, label_map)
-        val_loss, val_acc, val_f1 = eval_epoch(model, val_loader, loss_fn, device, label_map)
-        print(f" train loss={train_loss:.4f} acc={train_acc:.4f} f1={train_f1:.4f}")
-        print(f"  val  loss={val_loss:.4f} acc={val_acc:.4f} f1={val_f1:.4f}")
+        train_loss, train_acc, train_f1, train_sens, train_spec, train_auc = train_epoch(model, train_loader, optimizer,
+                                                                                         loss_fn, device, label_map)
+        val_loss, val_acc, val_f1, val_sens, val_spec, val_auc = eval_epoch(model, val_loader, loss_fn, device,
+                                                                            label_map)
+
+        print(
+            f" train loss={train_loss:.4f} acc={train_acc:.4f} f1={train_f1:.4f} sens={train_sens:.4f} spec={train_spec:.4f} auc={train_auc:.4f}")
+        print(
+            f"  val  loss={val_loss:.4f} acc={val_acc:.4f} f1={val_f1:.4f} sens={val_sens:.4f} spec={val_spec:.4f} auc={val_auc:.4f}")
 
         # save last checkpoint every epoch
         last_path = os.path.join(out_dir, "last_checkpoint.pth")
