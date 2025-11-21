@@ -2,87 +2,115 @@ import matplotlib.pyplot as plt
 import os
 import csv
 
-# ---- 保存训练过程的指标和绘制曲线 ----
-def plot_metrics(train_losses, val_losses, train_accs, val_accs, train_f1s, val_f1s, train_aucs, val_aucs, output_dir,
-                 model_name):
+# ================================================
+#  通用工具：确保目录存在
+# ================================================
+def ensure_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+
+# ================================================
+#  绘制训练过程曲线
+# ================================================
+def plot_metrics(
+        train_losses, val_losses,
+        train_accs, val_accs,
+        train_f1s, val_f1s,
+        train_aucs, val_aucs,
+        output_dir, model_name
+):
+    ensure_dir(output_dir)
     epochs = range(1, len(train_losses) + 1)
 
-    # Loss curve
-    plt.figure()
-    plt.plot(epochs, train_losses, label="Train Loss")
-    plt.plot(epochs, val_losses, label="Validation Loss")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.title(f"{model_name} - Training and Validation Loss")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f"{model_name}_loss_curve.png"))
-    plt.close()
+    # ---- 公用：画图风格 ----
+    def _plot(y1, y2, label1, label2, title, ylabel, filename):
+        plt.figure(figsize=(8, 6), dpi=120)
+        plt.plot(epochs, y1, label=label1, linewidth=2)
+        plt.plot(epochs, y2, label=label2, linewidth=2)
+        plt.xlabel("Epochs")
+        plt.ylabel(ylabel)
+        plt.title(f"{model_name} - {title}")
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, filename))
+        plt.close()
 
-    # Accuracy curve
-    plt.figure()
-    plt.plot(epochs, train_accs, label="Train Accuracy")
-    plt.plot(epochs, val_accs, label="Validation Accuracy")
-    plt.xlabel("Epochs")
-    plt.ylabel("Accuracy")
-    plt.title(f"{model_name} - Training and Validation Accuracy")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f"{model_name}_accuracy_curve.png"))
-    plt.close()
+    # Loss
+    _plot(train_losses, val_losses,
+          "Train Loss", "Validation Loss",
+          "Training and Validation Loss",
+          "Loss",
+          f"{model_name}_loss_curve.png")
 
-    # F1 Score curve
-    plt.figure()
-    plt.plot(epochs, train_f1s, label="Train F1")
-    plt.plot(epochs, val_f1s, label="Validation F1")
-    plt.xlabel("Epochs")
-    plt.ylabel("F1 Score")
-    plt.title(f"{model_name} - Training and Validation F1 Score")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f"{model_name}_f1_curve.png"))
-    plt.close()
+    # Accuracy
+    _plot(train_accs, val_accs,
+          "Train Accuracy", "Validation Accuracy",
+          "Training and Validation Accuracy",
+          "Accuracy",
+          f"{model_name}_accuracy_curve.png")
 
-    # AUC curve
-    plt.figure()
-    plt.plot(epochs, train_aucs, label="Train AUC")
-    plt.plot(epochs, val_aucs, label="Validation AUC")
-    plt.xlabel("Epochs")
-    plt.ylabel("AUC")
-    plt.title(f"{model_name} - Training and Validation AUC")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f"{model_name}_auc_curve.png"))
-    plt.close()
+    # F1 Score
+    _plot(train_f1s, val_f1s,
+          "Train F1", "Validation F1",
+          "Training and Validation F1 Score",
+          "F1 Score",
+          f"{model_name}_f1_curve.png")
+
+    # AUC
+    _plot(train_aucs, val_aucs,
+          "Train AUC", "Validation AUC",
+          "Training and Validation AUC",
+          "AUC",
+          f"{model_name}_auc_curve.png")
 
 
+# ================================================
+#  绘制 ROC 曲线
+# ================================================
 def plot_roc_curve(fpr, tpr, roc_auc, output_dir, model_name, epoch):
-    plt.figure()
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f"ROC curve (area = {roc_auc:.2f})")
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(f'{model_name} - ROC Curve - Epoch {epoch}')
-    plt.legend(loc='lower right')
-    plt.savefig(os.path.join(output_dir, f"{model_name}_roc_curve_epoch_{epoch}.png"))
+    ensure_dir(output_dir)
+
+    plt.figure(figsize=(7, 6), dpi=120)
+    plt.plot(fpr, tpr, lw=2, label=f"ROC curve (AUC={roc_auc:.3f})")
+    plt.plot([0, 1], [0, 1], linestyle="--")
+
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"{model_name} - ROC Curve (Epoch {epoch})")
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir,
+                             f"{model_name}_roc_epoch_{epoch}.png"))
     plt.close()
 
 
+# ================================================
+#  保存指标到 CSV
+# ================================================
 def save_metrics_to_csv(metrics, output_dir, model_name):
-    filepath = os.path.join(output_dir, f"{model_name}_metrics.csv")
-    fieldnames = ['epoch', 'train_loss', 'val_loss', 'train_acc', 'val_acc', 'train_f1', 'val_f1', 'train_auc',
-                  'val_auc']
+    ensure_dir(output_dir)
 
-    # Write header only if the file is new
+    filepath = os.path.join(output_dir, f"{model_name}_metrics.csv")
+    fieldnames = [
+        "epoch",
+        "train_loss", "val_loss",
+        "train_acc", "val_acc",
+        "train_f1", "val_f1",
+        "train_auc", "val_auc"
+    ]
+
     file_exists = os.path.exists(filepath)
 
-    with open(filepath, mode='a', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+    # 安全转换为 Python float
+    cleaned_metrics = {k: float(v) if isinstance(v, (float, int)) else v
+                       for k, v in metrics.items()}
 
+    with open(filepath, mode="a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not file_exists:
-            writer.writeheader()  # Write header only once
-
-        # Ensure metrics is a dictionary
-        if isinstance(metrics, dict):
-            writer.writerow(metrics)
-        else:
-            print("Error: Expected metrics to be a dictionary, but received:", type(metrics))
-
+            writer.writeheader()
+        writer.writerow(cleaned_metrics)

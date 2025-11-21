@@ -12,7 +12,7 @@ if not os.path.exists(pickle_folder_path):
     os.makedirs(pickle_folder_path)
 
 # 循环读 csv 文件
-for i in range(1701, 1887):
+for i in range(801, 901):
     # 生成 amcg 数据和特征点数据的文件路径
     amcg_file_path = os.path.join(csv_folder_path, f"{i}.csv")
     features_file_path = os.path.join(csv_folder_path, f"{i}.1.csv")  # 特征点存储文件
