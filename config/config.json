@@ -1,0 +1,17 @@
+{
+  "pickle_folder": "E:\\Pythonpro\\MCG_quexue_xinshuai\\data_pickle",
+  "label_csv": "E:\\Pythonpro\\MCG_quexue_xinshuai\\label.csv",
+  "out_dir": "./output",
+  "adapter_mode": "bn",
+  "batch_size": 8,
+  "epochs": 30,
+  "lr": 0.001,
+  "num_workers": 4,
+  "seed": 42,
+  "resume_from": null,
+  "use_amp": false,
+  "model_name": "CNN1D",
+  "field_isch": "Ischemia",
+  "field_xin": "xinshuai",
+  "save_every_n_epochs": 1
+}

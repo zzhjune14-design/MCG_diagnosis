@@ -503,9 +503,26 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./output",
 
 
 if __name__ == "__main__":
-    PICKLE_FOLDER = r"E:\Pythonpro\MCG_quexue_xinshuai\data_pickle"
-    LABEL_CSV = r"E:\Pythonpro\MCG_quexue_xinshuai\label.csv"
-    main(PICKLE_FOLDER, LABEL_CSV, out_dir="./output", adapter_mode="bn",
-         batch_size=8, epochs=30, lr=1e-3, num_workers=4, seed=42,
-         resume_from=None, use_amp=False, model_name="CNN1D",
-         field_isch="Ischemia", field_xin="xinshuai", save_every_n_epochs=1)
+    # 1. 读取 JSON 配置文件
+    config_path = r"config/config.json"
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+
+    # 2. 调用主函数
+    main(
+        cfg['pickle_folder'],
+        cfg['label_csv'],
+        out_dir=cfg['out_dir'],
+        adapter_mode=cfg['adapter_mode'],
+        batch_size=cfg['batch_size'],
+        epochs=cfg['epochs'],
+        lr=cfg['lr'],
+        num_workers=cfg['num_workers'],
+        seed=cfg['seed'],
+        resume_from=cfg['resume_from'],
+        use_amp=cfg['use_amp'],
+        model_name=cfg['model_name'],
+        field_isch=cfg['field_isch'],
+        field_xin=cfg['field_xin'],
+        save_every_n_epochs=cfg['save_every_n_epochs']
+    )
