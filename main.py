@@ -2,8 +2,6 @@
 import os
 import json
 import time
-from pathlib import Path
-from typing import Tuple, Dict
 
 import numpy as np
 import torch
@@ -11,8 +9,9 @@ import torch.nn as nn
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, auc
 
-from data_process.data_utils import set_seed, build_dataloaders, gather_pickle_files
+from data_process.data_utils import set_seed, gather_pickle_files, _get_binary_labels_from_raws_or_map, _normalize_binary_label_value
 from models.CNN1D import CNN1D_from_amcg
+from data_process.build_data import build_dataloaders
 
 # 尝试导入结果保存与 checkpoint 工具（兼容多种文件命名）
 try:
@@ -42,81 +41,7 @@ except Exception:
         raise ImportError("请确保存在 utils/checkpoint.py 或 utils/checkpoint_utils.py，且包含 save_checkpoint/load_checkpoint。错误：" + str(e))
 
 
-# -------------------------
-# 辅助：从 batch raws 或 label_map 获取二分类标签（0/1/-1）
-# -------------------------
-def _normalize_binary_label_value(v) -> int:
-    """
-    将可能的输入值标准化为 0/1/-1：
-      - 有效标签：1 / 0
-      - 缺失标签：None / NaN -> -1
-    """
-    if v is None:
-        return -1
-    try:
-        if isinstance(v, float) and np.isnan(v):
-            return -1
-    except Exception:
-        pass
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in ("1", "yes", "y", "true", "t", "有", "positive", "pos"):
-            return 1
-        if s in ("2", "0", "no", "n", "false", "f", "无", "negative", "neg"):
-            return 0
-        try:
-            iv = int(s)
-            return 1 if iv == 1 else 0
-        except Exception:
-            return -1
-    if isinstance(v, (int, float, bool, np.integer, np.floating)):
-        try:
-            iv = int(v)
-            return 1 if iv == 1 else 0
-        except Exception:
-            return -1
-    return -1
 
-
-def _get_binary_labels_from_raws_or_map(raws, subjects, field_name: str, label_map: dict):
-    """
-    返回 numpy array shape (B,) of ints (0/1/-1)
-    -1 表示该样本无标签
-    """
-    B = len(subjects)
-    labels = []
-
-    def _try_get_from_raw(r, key):
-        if not isinstance(r, dict):
-            return None
-        if key in r:
-            return r.get(key)
-        lk = key.lower()
-        uk = key.upper()
-        for k in (key, lk, uk):
-            if k in r:
-                return r.get(k)
-        return None
-
-    if isinstance(raws, (list, tuple)) and len(raws) > 0 and isinstance(raws[0], dict):
-        example_val = _try_get_from_raw(raws[0], field_name)
-        if example_val is not None:
-            for r in raws:
-                v = _try_get_from_raw(r, field_name)
-                labels.append(_normalize_binary_label_value(v))
-            return np.array(labels, dtype=int)
-
-    for s in subjects:
-        lm_entry = label_map.get(s, None)
-        if lm_entry is None:
-            labels.append(-1)
-            continue
-        if isinstance(lm_entry, dict):
-            raw_v = lm_entry.get(field_name, lm_entry.get(field_name.lower(), -1))
-        else:
-            raw_v = lm_entry
-        labels.append(_normalize_binary_label_value(raw_v))
-    return np.array(labels, dtype=int)
 
 
 # -------------------------
@@ -316,7 +241,7 @@ def main(pickle_folder: str, label_csv: str, out_dir: str = "./output",
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(out_dir, exist_ok=True)
 
-    # 请求 dataloaders（注意：你的 build_dataloaders 已改为可能返回 folds）
+    # 数据加载模块
     dl_res = build_dataloaders(
         pickle_folder=pickle_folder,
         label_csv=label_csv,

@@ -1,15 +1,14 @@
 # data_utils.py
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional, Union
+from typing import List, Dict, Optional, Union
 import random
 import pickle
-import json
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import Dataset
+
 
 # 定义公开接口
 __all__ = [
@@ -18,8 +17,8 @@ __all__ = [
     "load_label_map",
     "set_seed",
     "gather_pickle_files",
-    "build_dataloaders",
 ]
+
 
 # -----------------------
 # Dataset / collate
@@ -87,29 +86,25 @@ def collate_fn_indexed(batch):
     return X_tensor, list(subjects), list(raws)
 
 
-# -----------------------
-# 标签规范化工具
-# -----------------------
+# -------------------------
+# 辅助：从 batch raws 或 label_map 获取二分类标签（0/1/-1）
+# -------------------------
 def _normalize_binary_label_value(v) -> int:
     """
-    将 CSV / raws 中的标签值统一为 0/1。
-    约定（可扩展）：
-      - 标识阳性/有病的：1, "1", "yes", "y", "true", "t", "有", "positive", "pos" -> 1
-      - 标识阴性/无病的：2, "2", "0", "no", "n", "false", "f", "无", "negative", "neg" -> 0
-    对于数字：1->1，其他数字（例如2）->0。
-    若为 NaN/None/无法识别 -> 默认为 0。
+    将可能的输入值标准化为 0/1/-1：
+      - 有效标签：1 / 0
+      - 缺失标签：None / NaN -> -1
     """
     if v is None:
-        return 0
-    # float nan
+        return -1
     try:
         if isinstance(v, float) and np.isnan(v):
-            return 0
+            return -1
     except Exception:
         pass
     if isinstance(v, str):
         s = v.strip().lower()
-        if s in ("1", "yes", "y", "true", "t", "有", "hf", "positive", "pos"):
+        if s in ("1", "yes", "y", "true", "t", "有", "positive", "pos"):
             return 1
         if s in ("2", "0", "no", "n", "false", "f", "无", "negative", "neg"):
             return 0
@@ -117,14 +112,55 @@ def _normalize_binary_label_value(v) -> int:
             iv = int(s)
             return 1 if iv == 1 else 0
         except Exception:
-            return 0
+            return -1
     if isinstance(v, (int, float, bool, np.integer, np.floating)):
         try:
             iv = int(v)
             return 1 if iv == 1 else 0
         except Exception:
-            return 0
-    return 0
+            return -1
+    return -1
+
+
+def _get_binary_labels_from_raws_or_map(raws, subjects, field_name: str, label_map: dict):
+    """
+    返回 numpy array shape (B,) of ints (0/1/-1)
+    -1 表示该样本无标签
+    """
+    B = len(subjects)
+    labels = []
+
+    def _try_get_from_raw(r, key):
+        if not isinstance(r, dict):
+            return None
+        if key in r:
+            return r.get(key)
+        lk = key.lower()
+        uk = key.upper()
+        for k in (key, lk, uk):
+            if k in r:
+                return r.get(k)
+        return None
+
+    if isinstance(raws, (list, tuple)) and len(raws) > 0 and isinstance(raws[0], dict):
+        example_val = _try_get_from_raw(raws[0], field_name)
+        if example_val is not None:
+            for r in raws:
+                v = _try_get_from_raw(r, field_name)
+                labels.append(_normalize_binary_label_value(v))
+            return np.array(labels, dtype=int)
+
+    for s in subjects:
+        lm_entry = label_map.get(s, None)
+        if lm_entry is None:
+            labels.append(-1)
+            continue
+        if isinstance(lm_entry, dict):
+            raw_v = lm_entry.get(field_name, lm_entry.get(field_name.lower(), -1))
+        else:
+            raw_v = lm_entry
+        labels.append(_normalize_binary_label_value(raw_v))
+    return np.array(labels, dtype=int)
 
 
 # -----------------------
@@ -185,103 +221,4 @@ def gather_pickle_files(pickle_folder: str, exts: Optional[set] = None) -> List[
     return files_all
 
 
-# -----------------------
-# 构造 dataloaders（支持分层交叉验证）
-# -----------------------
-def build_dataloaders(pickle_folder: str,
-                      label_csv: str,
-                      batch_size: int = 8,
-                      n_splits: int = 5,
-                      seed: int = 42,
-                      num_workers: int = 4,
-                      pin_memory: bool = True,
-                      shuffle_train: bool = True,
-                      subject_col: str = "subject",
-                      label_cols: Optional[Union[str, List[str]]] = None,
-                      stratify_by: Optional[str] = None):
-    """
-    构造 dataloaders 并返回 (dataloaders_per_fold, label_map)
-    - label_cols: 指定要读取的 CSV 标签列（默认读取除 subject 列外的所有列）
-    - stratify_by: 在 StratifiedKFold 中使用的标签列名（默认使用 label_cols 的第一个）
-    返回:
-      dataloaders_per_fold: list of (train_loader, val_loader)
-      label_map: dict subject -> {label_col: 0/1, ...}
-    """
-    # 读取标签（subject -> dict）
-    label_map = load_label_map(label_csv, subject_col=subject_col, label_cols=label_cols)
 
-    files_all = gather_pickle_files(pickle_folder)
-
-    # 提取 subject ID（按文件名 stem）
-    subjects_all = []
-    for p in files_all:
-        try:
-            subjects_all.append(int(p.stem))
-        except Exception:
-            subjects_all.append(None)
-
-    # 保留那些在 label_map 中有标签的文件索引
-    idxs_with_label = [i for i, s in enumerate(subjects_all) if s in label_map]
-    if len(idxs_with_label) == 0:
-        raise RuntimeError("No pickle filenames matched labels in CSV")
-
-    subs = [subjects_all[i] for i in idxs_with_label]
-
-    # 选择 stratify key
-    sample_label_keys = list(next(iter(label_map.values())).keys())
-    if stratify_by is None:
-        stratify_key = sample_label_keys[0]
-    else:
-        stratify_key = stratify_by
-    if stratify_key not in sample_label_keys:
-        print(f"[warn] stratify_by='{stratify_key}' not found among label columns {sample_label_keys}. Falling back to first key.")
-        stratify_key = sample_label_keys[0]
-
-    # 构造 ys（用于 StratifiedKFold）
-    ys = [label_map[s][stratify_key] for s in subs]
-
-    # 如果 ys 中只有单一类别，Skf 会失败 -> 降级为随机切分
-    unique_vals = set(ys)
-    fold_indices = []
-    if len(unique_vals) <= 1:
-        print(f"[warn] stratify_by column '{stratify_key}' has only one unique value ({unique_vals}). Falling back to random splits.")
-        rng = np.random.RandomState(seed)
-        all_idxs = idxs_with_label.copy()
-        rng.shuffle(all_idxs)
-        n = len(all_idxs)
-        base = n // n_splits
-        extras = n % n_splits
-        start = 0
-        for f in range(n_splits):
-            size = base + (1 if f < extras else 0)
-            end = start + size
-            val_chunk = all_idxs[start:end]
-            train_chunk = [i for i in all_idxs if i not in val_chunk]
-            fold_indices.append((train_chunk, val_chunk))
-            start = end
-    else:
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        for train_pos, val_pos in skf.split(subs, ys):
-            train_idx = [idxs_with_label[i] for i in train_pos]
-            val_idx = [idxs_with_label[i] for i in val_pos]
-            fold_indices.append((train_idx, val_idx))
-
-    dataloaders_per_fold = []
-    for (train_idx, val_idx) in fold_indices:
-        train_files = [files_all[i] for i in train_idx]
-        val_files = [files_all[i] for i in val_idx]
-
-        train_ds = FilesListDataset(train_files)
-        val_ds = FilesListDataset(val_files)
-
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_train,
-                                  collate_fn=collate_fn_indexed, num_workers=num_workers,
-                                  pin_memory=pin_memory)
-
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                                collate_fn=collate_fn_indexed, num_workers=num_workers,
-                                pin_memory=pin_memory)
-
-        dataloaders_per_fold.append((train_loader, val_loader))
-
-    return dataloaders_per_fold, label_map
