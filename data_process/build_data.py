@@ -97,8 +97,13 @@ def build_dataloaders(pickle_folder: str,
         train_files = [files_all[i] for i in train_idx]
         val_files = [files_all[i] for i in val_idx]
 
-        train_ds = FilesListDataset(train_files)
-        val_ds = FilesListDataset(val_files)
+        # ================= 修改这里 =================
+        # 训练集：augment=True (开启随机噪声、缩放等)
+        train_ds = FilesListDataset(train_files, augment=True)
+
+        # 验证集：augment=False (保持原汁原味，用于评估真实性能)
+        val_ds = FilesListDataset(val_files, augment=False)
+        # ===========================================
 
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_train,
                                   collate_fn=collate_fn_indexed, num_workers=num_workers,
