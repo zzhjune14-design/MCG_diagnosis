@@ -160,8 +160,8 @@ def save_data_to_pickle(data_dict, filename, save_folder):
 # ==========================================
 if __name__ == "__main__":
     # 配置路径
-    folder_path = r'E:\Pythonpro\MCG_quexue_xinshuai\data_raw\jiankang\801-900'
-    save_folder = r'E:\Pythonpro\MCG_quexue_xinshuai\raw_data_pickle'
+    folder_path = r"E:\Pythonpro\MCG_quexue_xinshuai\data_raw\quexue801-986"
+    save_folder = r'E:\Pythonpro\MCG_quexue_xinshuai\raw_data_pickle\sick'
 
     # 确保保存目录存在
     if not os.path.exists(save_folder):

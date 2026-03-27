@@ -135,7 +135,7 @@ def process_all_pickles(input_folder, output_folder):
 
 if __name__ == "__main__":
     # 请确保路径正确
-    INPUT_DIR = r'E:\Pythonpro\MCG_quexue_xinshuai\raw_data_pickle'
-    OUTPUT_DIR = r'E:\Pythonpro\MCG_quexue_xinshuai\heartbeat_segments'
+    INPUT_DIR = r'E:\Pythonpro\MCG_quexue_xinshuai\raw_data_pickle\sick'
+    OUTPUT_DIR = r'E:\Pythonpro\MCG_quexue_xinshuai\heartbeat_segments\sick'
 
     process_all_pickles(INPUT_DIR, OUTPUT_DIR)
