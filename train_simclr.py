@@ -9,6 +9,7 @@ from datetime import datetime
 
 from data_process.mcg_dataset import MCGContrastiveDataset
 from models.MCG2Vec import MCG2VecSimCLR, NTXentLoss
+from models.CrossAttentionVec import DualBranchSimCLR
 
 
 # 假设你已经导入了 Step 1 的 MCGContrastiveDataset
@@ -33,7 +34,7 @@ def train_simclr():
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     # 【新增】断点恢复路径。如果为空字符串 ""，则从头训练；如果填入路径，则继续训练
-    RESUME_CHECKPOINT = "./checkpoints/simclr_checkpoint_latest.pth"  # 示例: "./checkpoints/simclr_checkpoint_latest.pth"
+    RESUME_CHECKPOINT = "./checkpoints/dual_branch_mcg_encoder_checkpoint_latest.pth"  # 示例: "./checkpoints2/dual_branch_mcg_encoder_checkpoint_latest.pth"
     START_EPOCH = 0  # 记录从哪个 epoch 开始
 
     # ==========================================
@@ -75,7 +76,7 @@ def train_simclr():
     # ==========================================
     # 2. 模型、损失函数与优化器配置
     # ==========================================
-    model = MCG2VecSimCLR(in_channels=36, feature_dim=256, out_dim=128).to(DEVICE)
+    model = DualBranchSimCLR(in_channels=36, feature_dim=256, out_dim=128).to(DEVICE)
     criterion = NTXentLoss(batch_size=BATCH_SIZE, temperature=TEMPERATURE)
 
     # 优化器: AdamW
@@ -168,12 +169,12 @@ def train_simclr():
         # ==========================================
         # 4.1 每隔 5 个 Epoch 或者最后一天，保存给下游微调用的 Encoder
         if (epoch + 1) % 2 == 0 or (epoch + 1) == EPOCHS:
-            encoder_path = os.path.join(SAVE_DIR, f"mcg2vec_encoder_ep{epoch + 1}.pth")
+            encoder_path = os.path.join(SAVE_DIR, f"dual_branch_mcg_encoder_ep{epoch + 1}.pth")
             torch.save(model.encoder.state_dict(), encoder_path)
             print(f"💾 保存下游微调专用 Encoder 权重至: {encoder_path}")
 
         # 4.2 【新增】每一个 Epoch 都覆盖保存最新的“完整断点”，防止突然断电
-        checkpoint_path = os.path.join(SAVE_DIR, "simclr_checkpoint_latest.pth")
+        checkpoint_path = os.path.join(SAVE_DIR, "dual_branch_mcg_encoder_checkpoint_latest.pth")
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),

@@ -1,5 +1,5 @@
 {
-    "timestamp": "2026-03-07 10:55:58",
+    "timestamp": "2026-04-14 23:08:46",
     "batch_size": 32,
     "accum_steps": 4,
     "epochs": 100,
@@ -7,5 +7,5 @@
     "min_lr": 1e-05,
     "weight_decay": 0.0001,
     "temperature": 0.1,
-    "resume_checkpoint": "./checkpoints/simclr_checkpoint_latest.pth"
+    "resume_checkpoint": "./checkpoints/dual_branch_mcg_encoder_checkpoint_latest.pth"
 }
